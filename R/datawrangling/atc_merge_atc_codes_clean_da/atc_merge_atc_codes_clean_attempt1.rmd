@@ -1,0 +1,48 @@
+---
+title: "part_d_atc_codes_clean_csv_merge"
+author: "Darya Akimova"
+date: "February 7, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+Packages:
+```{r packages}
+library(tidyverse)
+library(data.world)
+```
+
+Data:
+```{r data}
+drug.spend.ds <- "https://data.world/data4democracy/drug-spending"
+# drug names from Medicare Part D data:
+d.drugs <- data.world::query(
+  data.world::qry_sql("SELECT DISTINCT brand_name, generic_name FROM `spending_part_d_2011to2015_tidy`"),
+  dataset = drug.spend.ds
+  ) %>% 
+  mutate_all(str_trim)  # just in case
+glimpse(d.drugs)
+# atc classification system from atc_codes_clean.csv
+atc <- data.world::query(
+  data.world::qry_sql("SELECT * FROM atc_codes_clean"),
+  dataset = drug.spend.ds
+) 
+glimpse(atc)
+```
+
+A bit of a mess, and too much information for what is needed right now.
+
+```{r}
+atc.sml <- atc %>%
+  select(level5_code:kegg) %>% 
+  arrange(level5)
+glimpse(atc.sml)
+map_int(map(atc.sml, unique), length)
+```
+
+It's still a bit of a mess from where I stopped in my attempt to clean up this data. Wasn't sure how the names would be used.Also note, some compounds have more than 1 level 5 code - which means that they have multiple uses according to the ATC classification.
+
+Getting rid of the KEGG codes in the names would be a good place to start.

@@ -46,3 +46,127 @@ map_int(map(atc.sml, unique), length)
 It's still a bit of a mess from where I stopped in my attempt to clean up this data. Wasn't sure how the names would be used.Also note, some compounds have more than 1 level 5 code - which means that they have multiple uses according to the ATC classification.
 
 Getting rid of the KEGG codes in the names would be a good place to start.
+
+```{r}
+atc.sml <- atc.sml %>% 
+  mutate(lvl5_cln = str_replace(level5, "\\[DG.+\\]", "") %>% str_trim() %>% str_to_lower())
+str_sub(atc.sml$kegg, start = 1, end = 6) <- ""
+glimpse(atc.sml)
+atc.sml <- atc.sml %>% 
+  mutate(kegg_cln = str_replace(kegg, "\\([[:upper:]]{2,}.+\\)", "") %>% str_trim() %>% str_to_lower())
+atc.sml$kegg_cln[is.na(atc.sml$kegg_cln)] <- atc.sml$lvl5_cln[is.na(atc.sml$kegg_cln)]
+atc.cln <- atc.sml %>% 
+  select(level5_code, kegg_cln) %>% 
+  distinct() %>% 
+  arrange(kegg_cln)
+dim(atc.sml)
+dim(atc.cln)
+glimpse(atc.cln)
+```
+
+Now that that's been cleaned up a bit, let's try some matching:
+
+```{r}
+brand.semi.t1 <- d.drugs %>% 
+  semi_join(atc.cln, by = c("brand_name" = "kegg_cln"))
+dim(brand.semi.t1)
+brand.anti.t1 <- d.drugs %>% 
+  anti_join(atc.cln, by = c("brand_name" = "kegg_cln"))
+dim(brand.anti.t1)
+generic.semi.t1 <- brand.anti.t1 %>% 
+  semi_join(atc.cln, by = c("generic_name" = "kegg_cln"))
+dim(generic.semi.t1)
+generic.anti.t1 <- brand.anti.t1 %>% 
+  anti_join(atc.cln, by = c("generic_name" = "kegg_cln")) %>% 
+  arrange(generic_name)
+dim(generic.anti.t1)
+matched.so.far <- brand.semi.t1 %>% 
+  bind_rows(generic.semi.t1)
+dim(matched.so.far)
+# break 1
+# write_csv(matched.so.far, "partD_matched_2034_pass1.csv")
+# write_csv(generic.anti.t1, "partD_unmatched_2464_pass1.csv")
+```
+
+This is much better than the first pass with `drug_uses.csv`, where I only got 1325 matches on the first pass. A good sign! 
+
+Now, drugs with multiple ingredients:
+
+```{r}
+generic.anti.t1 <- generic.anti.t1 %>% 
+  mutate(
+    alt_name = generic_name,
+    mult.slash = str_count(alt_name, "/"),
+    mult.comm = str_count(alt_name, ","),
+    mult.dash = str_count(alt_name, "-"),
+    mult.all = mult.slash + mult.comm + mult.dash
+    )
+glimpse(generic.anti.t1)
+nrow(generic.anti.t1 %>% filter(mult.all > 0))
+# from previous attempts at matching: "/pf" probably indicates a prefilled syringe
+slash.pf <- generic.anti.t1 %>% filter(str_detect(alt_name, "pf"))
+nrow(slash.pf)
+glimpse(slash.pf)
+pf.semi <- generic.anti.t1 %>% 
+  mutate(alt_name = str_trim(str_replace(alt_name, "/pf", ""))) %>% 
+  semi_join(atc.cln, by = c("alt_name" = "kegg_cln")) %>% 
+  select(brand_name, generic_name)
+dim(pf.semi)
+matched.so.far <- matched.so.far %>% 
+  bind_rows(pf.semi)
+pf.anti <- generic.anti.t1 %>% 
+  mutate(alt_name = str_trim(str_replace(alt_name, "/pf", ""))) %>% 
+  anti_join(atc.cln, by = c("alt_name" = "kegg_cln"))
+dim(pf.anti)
+# another from previous attempts:
+sum(str_detect(pf.anti$alt_name, "hcl"))
+sum(str_detect(atc.cln$kegg_cln, "hcl"))
+sum(str_detect(atc.cln$kegg_cln, "hydrochloride"))
+# "hcl" = "hydrochloride"
+pf.anti <- pf.anti %>% 
+  mutate(alt_name = str_replace_all(alt_name, "hcl", "hydrochloride"))
+hcl.semi <- pf.anti %>% 
+  semi_join(atc.cln, by = c("alt_name" = "kegg_cln"))
+dim(hcl.semi)
+glimpse(hcl.semi %>% select(ends_with("name")))
+# 424 more matches!
+matched.so.far <- matched.so.far %>% 
+  bind_rows(hcl.semi %>% select(brand_name, generic_name))
+dim(matched.so.far)
+dim(unique(matched.so.far))
+# nice, no accidental repeats
+hcl.anti <- pf.anti %>% 
+  anti_join(atc.cln, by = c("alt_name" = "kegg_cln"))
+dim(hcl.anti)
+```
+
+Up to 1786 of the remaining drugs may have multiple ingredients. Although that's not necessarily the case because the characters `,` and `-` especially have different uses in drug names. The `/` character is the most straightforward currently to tackle. 
+
+```{r}
+table(hcl.anti$mult.slash)
+hcl.anti <- hcl.anti %>% 
+  mutate(mult.slash = str_count(alt_name, "/"))
+mult.ingred.5 <- hcl.anti %>% 
+  filter(mult.slash >= 4) %>% 
+  arrange(generic_name)
+# start with 2 ingredient drugs, separated by only 1 `/`
+gen.anti.2ingrd <- hcl.anti %>% 
+  filter(mult.slash == 1) %>% 
+  mutate(alt_copy = alt_name) %>% 
+  separate(alt_copy, c("ingrd_1", "ingrd_2"), sep = "/") %>% 
+  select(ends_with("name"), starts_with("ingrd"))
+glimpse(gen.anti.2ingrd)
+gen.anti.2ingrd <- gen.anti.2ingrd %>% 
+  gather("ingred", "chem_name", 4:5) %>% 
+  arrange(alt_name)
+glimpse(gen.anti.2ingrd)
+ingrd2.semi.t1 <- gen.anti.2ingrd %>% 
+  semi_join(atc.cln, by = c("chem_name" = "kegg_cln"))
+dim(ingrd2.semi.t1)
+ingrd2.anti.t1 <- gen.anti.2ingrd %>% 
+  anti_join(atc.cln, by = c("chem_name" = "kegg_cln"))
+dim(ingrd2.anti.t1)
+dim(ingrd2.anti.t1 %>% select(chem_name) %>% unique())
+test <- ingrd2.anti.t1 %>% select(chem_name) %>% unique() %>% arrange(chem_name)
+```
+
